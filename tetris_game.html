@@ -1,0 +1,283 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html>
+<head>
+  <title>Tetris Game</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.2/p5.min.js"></script>
+  <style>
+    body { display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #f0f0f0; }
+    #gameCanvas { border: 2px solid black; }
+    #previewCanvas { border: 2px solid black; margin-left: 20px; }
+  </style>
+</head>
+<body>
+<script>
+  let grid;
+  let currentPiece;
+  let nextPiece;
+  let score = 0;
+  const GRID_WIDTH = 10;
+  const GRID_HEIGHT = 20;
+  const BLOCK_SIZE = 30;
+  const PREVIEW_SIZE = 4 * BLOCK_SIZE;
+  let lastFallTime = 0;
+  let fallInterval = 1000; // Start at 1000ms (1 second), adjusted dynamically
+  let lastMoveTime = 0;
+  const MOVE_INTERVAL = 150; // Move left/right every 150ms when key held
+  let previewSketch;
+
+  const SHAPES = [
+    [[1, 1, 1, 1]], // I
+    [[1, 1], [1, 1]], // O
+    [[0, 1, 0], [1, 1, 1]], // T
+    [[1, 1, 0], [0, 1, 1]], // S
+    [[0, 1, 1], [1, 1, 0]], // Z
+    [[1, 0, 0], [1, 1, 1]], // J
+    [[0, 0, 1], [1, 1, 1]], // L
+    [[0, 1, 0], [1, 1, 1], [0, 1, 0]], // Plus
+    [[1, 0, 1], [1, 1, 1]], // U
+    [[1, 0, 0, 0], [1, 1, 1, 1]] // Long L
+  ];
+
+  function setup() {
+    let gameCanvas = createCanvas(GRID_WIDTH * BLOCK_SIZE, GRID_HEIGHT * BLOCK_SIZE);
+    gameCanvas.id('gameCanvas');
+    grid = Array(GRID_HEIGHT).fill().map(() => Array(GRID_WIDTH).fill(0));
+    spawnNewPiece();
+    spawnNextPiece();
+    frameRate(60); // Smooth rendering
+
+    // Create separate canvas for preview
+    previewSketch = new p5((sketch) => {
+      sketch.setup = () => {
+        let previewCanvas = sketch.createCanvas(PREVIEW_SIZE, PREVIEW_SIZE);
+        previewCanvas.id('previewCanvas');
+      };
+      sketch.draw = () => {
+        sketch.background(220);
+        sketch.fill(0, 255, 0); // Green for next piece
+        for (let y = 0; y < nextPiece.shape.length; y++) {
+          for (let x = 0; x < nextPiece.shape[y].length; x++) {
+            if (nextPiece.shape[y][x]) {
+              sketch.rect(x * BLOCK_SIZE, y * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+            }
+          }
+        }
+        sketch.textSize(16);
+        sketch.fill(0);
+        sketch.text("Next:", 0, 20);
+      };
+    });
+  }
+
+  function draw() {
+    background(220);
+    drawGrid();
+    drawPiece(currentPiece);
+    if (millis() - lastFallTime >= fallInterval) {
+      updatePiece();
+      lastFallTime = millis();
+    }
+    // Handle continuous left/right movement when keys are held
+    if (millis() - lastMoveTime >= MOVE_INTERVAL) {
+      if (keyIsDown(LEFT_ARROW) && canMove(currentPiece, -1, 0)) {
+        currentPiece.x--;
+        lastMoveTime = millis();
+      } else if (keyIsDown(RIGHT_ARROW) && canMove(currentPiece, 1, 0)) {
+        currentPiece.x++;
+        lastMoveTime = millis();
+      }
+    }
+    textSize(20);
+    text(`Score: ${score}`, 10, 30);
+  }
+
+  function updateFallInterval() {
+    // Reduce fall interval by 50ms for every 200 score points, min 500ms
+    fallInterval = Math.max(500, 1000 - Math.floor(score / 200) * 50);
+  }
+
+  function spawnNewPiece() {
+    if (nextPiece) {
+      currentPiece = nextPiece;
+      currentPiece.x = Math.floor(GRID_WIDTH / 2) - Math.floor(currentPiece.shape[0].length / 2);
+      currentPiece.y = 0;
+      if (currentPiece.x + currentPiece.shape[0].length > GRID_WIDTH) {
+        currentPiece.x = GRID_WIDTH - currentPiece.shape[0].length;
+      }
+      if (currentPiece.x < 0) {
+        currentPiece.x = 0;
+      }
+    } else {
+      const shapeIndex = Math.floor(Math.random() * SHAPES.length);
+      currentPiece = {
+        shape: SHAPES[shapeIndex],
+        x: Math.floor(GRID_WIDTH / 2) - Math.floor(SHAPES[shapeIndex][0].length / 2),
+        y: 0
+      };
+      if (currentPiece.x + currentPiece.shape[0].length > GRID_WIDTH) {
+        currentPiece.x = GRID_WIDTH - currentPiece.shape[0].length;
+      }
+      if (currentPiece.x < 0) {
+        currentPiece.x = 0;
+      }
+    }
+    if (!canMove(currentPiece, 0, 0)) {
+      grid = Array(GRID_HEIGHT).fill().map(() => Array(GRID_WIDTH).fill(0));
+      score = 0;
+      fallInterval = 1000; // Reset fall interval on game over
+    }
+    spawnNextPiece();
+  }
+
+  function spawnNextPiece() {
+    const shapeIndex = Math.floor(Math.random() * SHAPES.length);
+    nextPiece = {
+      shape: SHAPES[shapeIndex],
+      x: 0, // Position relative to preview canvas
+      y: 1
+    };
+  }
+
+  function drawGrid() {
+    for (let y = 0; y < GRID_HEIGHT; y++) {
+      for (let x = 0; x < GRID_WIDTH; x++) {
+        if (grid[y][x]) {
+          fill(0, 0, 255);
+          rect(x * BLOCK_SIZE, y * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+        }
+      }
+    }
+  }
+
+  function drawPiece(piece) {
+    fill(255, 0, 0);
+    for (let y = 0; y < piece.shape.length; y++) {
+      for (let x = 0; x < piece.shape[y].length; x++) {
+        if (piece.shape[y][x]) {
+          rect((piece.x + x) * BLOCK_SIZE, (piece.y + y) * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+        }
+      }
+    }
+  }
+
+  function updatePiece() {
+    if (canMove(currentPiece, 0, 1)) {
+      currentPiece.y++;
+    } else {
+      placePiece();
+      spawnNewPiece();
+    }
+  }
+
+  function canMove(piece, dx, dy) {
+    for (let y = 0; y < piece.shape.length; y++) {
+      for (let x = 0; x < piece.shape[y].length; x++) {
+        if (piece.shape[y][x]) {
+          let newX = piece.x + x + dx;
+          let newY = piece.y + y + dy;
+          if (newX < 0 || newX >= GRID_WIDTH || newY >= GRID_HEIGHT) {
+            return false;
+          }
+          if (newY >= 0 && grid[newY][newX]) {
+            return false;
+          }
+        }
+      }
+    }
+    return true;
+  }
+
+  function placePiece() {
+    for (let y = 0; y < currentPiece.shape.length; y++) {
+      for (let x = 0; x < currentPiece.shape[y].length; x++) {
+        if (currentPiece.shape[y][x] && currentPiece.y + y >= 0) {
+          grid[currentPiece.y + y][currentPiece.x + x] = 1;
+        }
+      }
+    }
+    clearLines();
+  }
+
+  function clearLines() {
+    for (let y = GRID_HEIGHT - 1; y >= 0; y--) {
+      if (grid[y].every(cell => cell)) {
+        grid.splice(y, 1);
+        grid.unshift(Array(GRID_WIDTH).fill(0));
+        score += 100;
+      }
+    }
+    updateFallInterval(); // Update fall speed after clearing lines
+  }
+
+  function rotatePiece() {
+    let newShape = currentPiece.shape[0].map((_, i) => currentPiece.shape.map(row => row[i]).reverse());
+    let tempShape = currentPiece.shape;
+    let tempX = currentPiece.x;
+    currentPiece.shape = newShape;
+    if (currentPiece.x + currentPiece.shape[0].length > GRID_WIDTH) {
+      currentPiece.x = GRID_WIDTH - currentPiece.shape[0].length;
+    }
+    if (currentPiece.x < 0) {
+      currentPiece.x = 0;
+    }
+    if (!canMove(currentPiece, 0, 0)) {
+      for (let offset of [-2, -1, 1, 2]) {
+        currentPiece.x = tempX + offset;
+        if (canMove(currentPiece, 0, 0)) {
+          return;
+        }
+      }
+      currentPiece.x = tempX;
+      currentPiece.shape = tempShape;
+    }
+  }
+
+  function keyPressed() {
+    if (keyCode === DOWN_ARROW && canMove(currentPiece, 0, 1)) {
+      currentPiece.y++;
+    } else if (keyCode === 32) { // Space key
+      rotatePiece();
+    }
+  }
+</script>
+<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'95f57f81587ec971',t:'MTc1MjU0MzA2My4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'95f582815fc0a471',t:'MTc1MjU0MzE4Ni4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'95f5862df881ef62',t:'MTc1MjU0MzMzNi4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'95f5888c2aa7d64f',t:'MTc1MjU0MzQzMy4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'95f5a596ff1dd6b3',t:'MTc1MjU0NDYyMy4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'95f5af885bcdd6a9',t:'MTc1MjU0NTAzMC4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'95f5b692e8a55fa6',t:'MTc1MjU0NTMxOC4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'95f605bfbf063879',t:'MTc1MjU0ODU2MS4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
